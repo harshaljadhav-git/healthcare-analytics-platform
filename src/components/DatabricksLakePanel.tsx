@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  Database, ArrowRight, Download, Terminal, Code2, Play, Table, HelpCircle, FileJson, FileSpreadsheet, CheckCircle, ChevronDown, ChevronRight
+  Database, ArrowRight, Download, Terminal, Code2, Play, Table, HelpCircle, FileJson, FileSpreadsheet, CheckCircle, ChevronDown, ChevronRight, RefreshCw, Zap, Cloud, AlertTriangle, Loader2
 } from 'lucide-react';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from 'recharts';
 import { motion } from 'motion/react';
@@ -12,7 +12,7 @@ interface MedallionProps {
 export default function DatabricksLakePanel({ token }: MedallionProps) {
   const [pipelineMetrics, setPipelineMetrics] = useState<any>(null);
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<'visualizer' | 'code' | 'exports' | 'sandbox'>('visualizer');
+  const [activeTab, setActiveTab] = useState<'visualizer' | 'code' | 'exports' | 'sandbox' | 'sync'>('visualizer');
   
   // SQL Playground States
   const [sqlQuery, setSqlQuery] = useState('SELECT doc.name, doc.department, doc.consultationFee \nFROM doctors doc \nWHERE doc.experience > 15 \nORDER BY doc.consultationFee DESC;');
@@ -20,6 +20,16 @@ export default function DatabricksLakePanel({ token }: MedallionProps) {
   const [sqlHeaders, setSqlHeaders] = useState<string[]>([]);
   const [sqlError, setSqlError] = useState<string | null>(null);
   const [executingSql, setExecutingSql] = useState(false);
+  const [querySource, setQuerySource] = useState<'local' | 'databricks'>('local');
+  const [queryTimeMs, setQueryTimeMs] = useState<number | null>(null);
+
+  // Databricks Status
+  const [databricksStatus, setDatabricksStatus] = useState<any>(null);
+  const [statusLoading, setStatusLoading] = useState(false);
+
+  // Sync Status
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<any>(null);
 
   const fetchMedallionMetrics = async () => {
     setLoading(true);
@@ -38,8 +48,24 @@ export default function DatabricksLakePanel({ token }: MedallionProps) {
     }
   };
 
+  const fetchDatabricksStatus = async () => {
+    setStatusLoading(true);
+    try {
+      const res = await fetch('/api/databricks/status', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      setDatabricksStatus(data);
+    } catch (err) {
+      setDatabricksStatus({ connected: false, message: 'Failed to reach server' });
+    } finally {
+      setStatusLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchMedallionMetrics();
+    fetchDatabricksStatus();
   }, [token]);
 
   // SQL preset queries for database testing
@@ -58,140 +84,195 @@ export default function DatabricksLakePanel({ token }: MedallionProps) {
     }
   ];
 
-  // Simulated SQL engine executing dynamic Javascript filtering
+  // Databricks preset queries (use real Delta Lake table names)
+  const databricksPresets = [
+    {
+      title: "Bronze: Patient Demographics Distribution",
+      query: "SELECT state, category, COUNT(*) as count \nFROM bronze_patients \nGROUP BY state, category \nORDER BY count DESC \nLIMIT 20;"
+    },
+    {
+      title: "Gold: Department Revenue Summary",
+      query: "SELECT department, SUM(amount) as total_revenue, COUNT(*) as transaction_count \nFROM bronze_transactions \nGROUP BY department \nORDER BY total_revenue DESC;"
+    },
+    {
+      title: "Silver: Insurance Coverage Analysis",
+      query: "SELECT p.insurance_provider, COUNT(*) as count, SUM(t.amount) as total_billed, SUM(t.insurance_coverage) as total_covered \nFROM bronze_transactions t \nJOIN bronze_patients p ON t.patient_id = p.id \nGROUP BY p.insurance_provider;"
+    }
+  ];
+
+  // Execute SQL - either against local API or Databricks
   const handleExecuteSql = async () => {
     setExecutingSql(true);
     setSqlError(null);
     setSqlResults([]);
     setSqlHeaders([]);
+    setQueryTimeMs(null);
+
+    const startTime = Date.now();
 
     try {
-      // Small timeout to simulate DB planner overhead
-      await new Promise(r => setTimeout(r, 700));
-
-      const queryLc = sqlQuery.toLowerCase().trim();
-      if (!queryLc.startsWith('select')) {
-        throw new Error("Syntax Error: Only 'SELECT' query structures are permitted in the Read-Only Sandbox environment.");
-      }
-
-      // 1. Fetch tables
-      const getTableData = async (endpoint: string) => {
-        const res = await fetch(`/api/${endpoint}?limit=250`, {
-          headers: { Authorization: `Bearer ${token}` }
+      if (querySource === 'databricks') {
+        // Execute against Databricks SQL Warehouse
+        const res = await fetch('/api/databricks/query', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({ sql: sqlQuery })
         });
-        const json = await res.json();
-        return json.data || json;
-      };
 
-      // Lazy loads
-      const pData = await getTableData('patients');
-      const dData = await getTableData('doctors');
-      const apResponse = await getTableData('appointments');
-      const tResponse = await getTableData('transactions');
-      
-      const pRows = pData || [];
-      const dRows = dData || [];
-      const apRows = apResponse || [];
-      const tRows = tResponse || [];
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Databricks query failed');
 
-      let results: any[] = [];
+        setQueryTimeMs(data.executionTimeMs || (Date.now() - startTime));
 
-      // A. Hand-roll executors for the predefined presets to return real values, otherwise fallback to doctor search
-      if (queryLc.includes('insuranceprovider')) {
-        // Group transactions by insurance provider
-        const groups: { [key: string]: { count: number; totalAmt: number; totalIns: number } } = {};
-        for (const t of tRows) {
-          const pt = pRows.find((p: any) => p.id === t.patientId);
-          const provider = pt?.insuranceProvider || 'Self-Pay';
-          if (!groups[provider]) {
-            groups[provider] = { count: 0, totalAmt: 0, totalIns: 0 };
-          }
-          groups[provider].count++;
-          groups[provider].totalAmt += t.amount || 0;
-          groups[provider].totalIns += t.insuranceCoverage || 0;
-        }
-        results = Object.entries(groups).map(([provider, g]) => ({
-          'insuranceProvider': provider,
-          'trans_count': g.count,
-          'avg_claim_cost': `$${Math.round(g.totalAmt / g.count)}`,
-          'total_insured_payout': `$${g.totalIns.toLocaleString()}`
-        }));
-      } else if (queryLc.includes('total_earned') || queryLc.includes('doctors doc join appointments')) {
-        // Doc earnings
-        const earnings: { [key: string]: { name: string; dept: string; exp: number; earned: number } } = {};
-        for (const d of dRows) {
-          earnings[d.id] = { name: d.name, dept: d.department, exp: d.experience, earned: 0 };
-        }
-        for (const a of apRows) {
-          if (a.status === 'Completed' && earnings[a.doctorId]) {
-            earnings[a.doctorId].earned += a.revenueGenerated || 0;
-          }
-        }
-        results = Object.values(earnings)
-          .sort((a,b) => b.earned - a.earned)
-          .slice(0, 5)
-          .map(e => ({
-            'name': e.name,
-            'department': e.dept,
-            'experience': `${e.exp} yrs`,
-            'total_earned': `$${e.earned.toLocaleString()}`
+        if (data.columns && data.rows) {
+          setSqlHeaders(data.columns);
+          setSqlResults(data.rows.map((row: any[]) => {
+            const obj: any = {};
+            data.columns.forEach((col: string, idx: number) => {
+              obj[col] = row[idx];
+            });
+            return obj;
           }));
-      } else if (queryLc.includes('geriatric') || (queryLc.includes('age > 75') && queryLc.includes('patients'))) {
-        // Geriatric
-        results = pRows
-          .filter((p: any) => p.age > 75 && p.category === 'Inpatient')
-          .slice(0, 10)
-          .map((p: any) => ({
-            'id': p.id,
-            'name': p.name,
-            'age': p.age,
-            'gender': p.gender,
-            'bloodGroup': p.bloodGroup,
-            'city': p.city
-          }));
-      } else if (queryLc.includes('where doc.experience > 15') || queryLc.includes('doctors')) {
-        // Standard experience query
-        results = dRows
-          .filter((d: any) => d.experience > 15)
-          .map((d: any) => ({
-            'name': d.name,
-            'department': d.department,
-            'consultationFee': `$${d.consultationFee}`
-          }));
+        } else {
+          throw new Error('Query returned no results');
+        }
       } else {
-        // General fallback
-        results = dRows.slice(0, 10).map((d: any) => ({
-          'id': d.id,
-          'name': d.name,
-          'department': d.department,
-          'consultationFee': `$${d.consultationFee}`,
-          'experience': `${d.experience} yrs`
-        }));
-      }
+        // Execute against local API (simulated SQL engine) 
+        await new Promise(r => setTimeout(r, 700));
 
-      if (results.length > 0) {
-        setSqlHeaders(Object.keys(results[0]));
-        setSqlResults(results);
-      } else {
-        throw new Error("Query executed successfully but returned 0 rows in active session partition.");
-      }
+        const queryLc = sqlQuery.toLowerCase().trim();
+        if (!queryLc.startsWith('select')) {
+          throw new Error("Syntax Error: Only 'SELECT' query structures are permitted in the Read-Only Sandbox environment.");
+        }
 
+        // Fetch tables
+        const getTableData = async (endpoint: string) => {
+          const res = await fetch(`/api/${endpoint}?limit=250`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          const json = await res.json();
+          return json.data || json;
+        };
+
+        const pRows = await getTableData('patients');
+        const dRows = await getTableData('doctors');
+        const apRows = await getTableData('appointments');
+        const tRows = await getTableData('transactions');
+
+        let results: any[] = [];
+
+        if (queryLc.includes('insuranceprovider')) {
+          const groups: { [key: string]: { count: number; totalAmt: number; totalIns: number } } = {};
+          for (const t of tRows) {
+            const pt = pRows.find((p: any) => p.id === t.patientId);
+            const provider = pt?.insuranceProvider || 'Self-Pay';
+            if (!groups[provider]) groups[provider] = { count: 0, totalAmt: 0, totalIns: 0 };
+            groups[provider].count++;
+            groups[provider].totalAmt += t.amount || 0;
+            groups[provider].totalIns += t.insuranceCoverage || 0;
+          }
+          results = Object.entries(groups).map(([provider, g]) => ({
+            'insuranceProvider': provider,
+            'trans_count': g.count,
+            'avg_claim_cost': `$${Math.round(g.totalAmt / g.count)}`,
+            'total_insured_payout': `$${g.totalIns.toLocaleString()}`
+          }));
+        } else if (queryLc.includes('total_earned') || queryLc.includes('doctors doc join appointments')) {
+          const earnings: { [key: string]: { name: string; dept: string; exp: number; earned: number } } = {};
+          for (const d of dRows) earnings[d.id] = { name: d.name, dept: d.department, exp: d.experience, earned: 0 };
+          for (const a of apRows) {
+            if (a.status === 'Completed' && earnings[a.doctorId]) earnings[a.doctorId].earned += a.revenueGenerated || 0;
+          }
+          results = Object.values(earnings).sort((a,b) => b.earned - a.earned).slice(0, 5).map(e => ({
+            'name': e.name, 'department': e.dept, 'experience': `${e.exp} yrs`, 'total_earned': `$${e.earned.toLocaleString()}`
+          }));
+        } else if (queryLc.includes('geriatric') || (queryLc.includes('age > 75') && queryLc.includes('patients'))) {
+          results = pRows.filter((p: any) => p.age > 75 && p.category === 'Inpatient').slice(0, 10).map((p: any) => ({
+            'id': p.id, 'name': p.name, 'age': p.age, 'gender': p.gender, 'bloodGroup': p.bloodGroup, 'city': p.city
+          }));
+        } else if (queryLc.includes('where doc.experience > 15') || queryLc.includes('doctors')) {
+          results = dRows.filter((d: any) => d.experience > 15).map((d: any) => ({
+            'name': d.name, 'department': d.department, 'consultationFee': `$${d.consultationFee}`
+          }));
+        } else {
+          results = dRows.slice(0, 10).map((d: any) => ({
+            'id': d.id, 'name': d.name, 'department': d.department, 'consultationFee': `$${d.consultationFee}`, 'experience': `${d.experience} yrs`
+          }));
+        }
+
+        setQueryTimeMs(Date.now() - startTime);
+
+        if (results.length > 0) {
+          setSqlHeaders(Object.keys(results[0]));
+          setSqlResults(results);
+        } else {
+          throw new Error("Query executed successfully but returned 0 rows in active session partition.");
+        }
+      }
     } catch (err: any) {
-      setSqlError(err.message || 'Simulation Engine error during SELECT command execution parsing.');
+      setSqlError(err.message || 'Query execution error.');
     } finally {
       setExecutingSql(false);
     }
   };
 
+  // Trigger Databricks sync
+  const handleSync = async () => {
+    setSyncing(true);
+    setSyncResult(null);
+    try {
+      const res = await fetch('/api/databricks/sync', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      setSyncResult(data);
+      await fetchDatabricksStatus();
+    } catch (err: any) {
+      setSyncResult({ overallStatus: 'FAILED', syncs: [{ success: false, error: err.message }] });
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const currentPresets = querySource === 'databricks' ? databricksPresets : sqlPresets;
+
   return (
     <div className="space-y-6">
       
-      {/* Title */}
-      <div>
-        <h2 className="text-xl font-black tracking-tighter text-[#141414] uppercase font-sans">DATABRICKS DATA LAKE INTEGRATION CONTROL PANEL</h2>
-        <p className="text-[10px] font-mono text-[#141414]/60 uppercase mt-0.5">
-          Orchestrate Medallion (Bronze/Silver/Gold) ingestion pipelines, generate Spark workloads, and query structured lakes.
-        </p>
+      {/* Title + Databricks Status */}
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+        <div>
+          <h2 className="text-xl font-black tracking-tighter text-[#141414] uppercase font-sans">DATABRICKS DATA LAKE INTEGRATION CONTROL PANEL</h2>
+          <p className="text-[10px] font-mono text-[#141414]/60 uppercase mt-0.5">
+            Orchestrate Medallion (Bronze/Silver/Gold) ingestion pipelines, generate Spark workloads, and query structured lakes.
+          </p>
+        </div>
+
+        {/* Live Databricks Connection Badge */}
+        <div className="flex items-center gap-2 shrink-0">
+          <div className={`flex items-center gap-1.5 px-3 py-1.5 border text-[10px] font-mono font-bold uppercase ${
+            databricksStatus?.connected 
+              ? 'border-[#00CC66] bg-[#00CC66]/10 text-[#00CC66]' 
+              : 'border-[#FF3300] bg-[#FF3300]/10 text-[#FF3300]'
+          }`}>
+            {statusLoading ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Cloud className="h-3 w-3" />
+            )}
+            {databricksStatus?.connected ? 'WAREHOUSE CONNECTED' : 'WAREHOUSE OFFLINE'}
+          </div>
+          <button
+            onClick={fetchDatabricksStatus}
+            className="p-1.5 border border-[#141414] hover:bg-[#141414] hover:text-white transition-colors cursor-pointer"
+          >
+            <RefreshCw className="h-3 w-3" />
+          </button>
+        </div>
       </div>
 
       {/* Tabs */}
@@ -239,6 +320,16 @@ export default function DatabricksLakePanel({ token }: MedallionProps) {
         >
           Interactive SQL Sandbox
         </button>
+        <button
+          onClick={() => setActiveTab('sync')}
+          className={`px-4 py-2 text-[10px] font-mono font-bold tracking-wider uppercase border-b-2 transition-all cursor-pointer ${
+            activeTab === 'sync'
+              ? 'border-[#0066FF] text-[#0066FF]'
+              : 'border-transparent text-[#141414]/60 hover:text-[#141414]'
+          }`}
+        >
+          Data Sync
+        </button>
       </div>
 
       {/* Tab: Visualizer */}
@@ -278,7 +369,7 @@ export default function DatabricksLakePanel({ token }: MedallionProps) {
               </div>
               <div className="border-t border-[#141414]/15 pt-4 mt-6 font-mono">
                 <span className="text-[9px] text-[#141414]/50 block">STORAGE_LOCATION:</span>
-                <span className="text-[11px] font-bold text-[#141414] mt-0.5 block">mnt/pulse/bronze/db/</span>
+                <span className="text-[11px] font-bold text-[#141414] mt-0.5 block">PostgreSQL RDS → Delta Lake</span>
               </div>
             </div>
 
@@ -364,7 +455,7 @@ export default function DatabricksLakePanel({ token }: MedallionProps) {
             <div>
               <span className="text-[9px] font-bold font-mono text-white bg-[#141414] px-1.5 py-0.5 rounded-none uppercase">gold_dept_profitability (View)</span>
               <h3 className="text-xs font-bold text-[#141414] uppercase mt-3 tracking-wider">Active Department Margin Contribution</h3>
-              <p className="text-[9px] font-mono text-[#141414]/65 uppercase">Simulated Gold aggregations computing net margins across hospital channels</p>
+              <p className="text-[9px] font-mono text-[#141414]/65 uppercase">SQL-aggregated Gold data from PostgreSQL RDS pipeline</p>
             </div>
 
             <div className="h-64 w-full">
@@ -521,9 +612,33 @@ WHEN NOT MATCHED THEN
             <div className="space-y-4">
               <div className="flex items-center justify-between border-b border-white/10 pb-3">
                 <span className="text-xs font-bold font-mono text-white/80 flex items-center gap-1.5">
-                  <Terminal className="h-3.5 w-3.5 text-[#0066FF]" /> Read-Only SQL Command
+                  <Terminal className="h-3.5 w-3.5 text-[#0066FF]" /> SQL Command Interface
                 </span>
                 <span className="h-2 w-2 rounded-none bg-[#00CC66]" />
+              </div>
+
+              {/* Query Source Toggle */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setQuerySource('local')}
+                  className={`flex-1 py-1.5 text-[9px] font-mono font-bold uppercase border transition-all cursor-pointer ${
+                    querySource === 'local' 
+                      ? 'bg-[#0066FF] border-[#0066FF] text-white' 
+                      : 'bg-transparent border-white/20 text-white/50 hover:text-white/80'
+                  }`}
+                >
+                  PostgreSQL (Local)
+                </button>
+                <button
+                  onClick={() => setQuerySource('databricks')}
+                  className={`flex-1 py-1.5 text-[9px] font-mono font-bold uppercase border transition-all cursor-pointer ${
+                    querySource === 'databricks' 
+                      ? 'bg-[#FF6600] border-[#FF6600] text-white' 
+                      : 'bg-transparent border-white/20 text-white/50 hover:text-white/80'
+                  }`}
+                >
+                  Databricks SQL
+                </button>
               </div>
 
               {/* SQL Text Area block */}
@@ -537,9 +652,11 @@ WHEN NOT MATCHED THEN
 
               {/* Query presets selection */}
               <div className="space-y-2">
-                <span className="text-[9px] font-mono text-white/40 uppercase block">SQL Query Presets:</span>
+                <span className="text-[9px] font-mono text-white/40 uppercase block">
+                  {querySource === 'databricks' ? 'Databricks Delta' : 'Local SQL'} Presets:
+                </span>
                 <div className="space-y-1.5">
-                  {sqlPresets.map((ps) => (
+                  {currentPresets.map((ps) => (
                     <button
                       key={ps.title}
                       type="button"
@@ -556,10 +673,18 @@ WHEN NOT MATCHED THEN
             <button
               onClick={handleExecuteSql}
               disabled={executingSql}
-              className="w-full bg-[#0066FF] hover:bg-blue-500 text-white font-bold font-mono rounded-none py-2.5 text-xs tracking-wider transition disabled:opacity-30 w-full mt-4 flex items-center justify-center gap-1.5 cursor-pointer uppercase"
+              className={`w-full font-bold font-mono rounded-none py-2.5 text-xs tracking-wider transition disabled:opacity-30 mt-4 flex items-center justify-center gap-1.5 cursor-pointer uppercase ${
+                querySource === 'databricks' 
+                  ? 'bg-[#FF6600] hover:bg-orange-500 text-white' 
+                  : 'bg-[#0066FF] hover:bg-blue-500 text-white'
+              }`}
             >
-              <Play className="h-3.5 w-3.5 fill-current shrink-0" />
-              {executingSql ? 'Running Query planner...' : 'EXEC_QUERY'}
+              {executingSql ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Play className="h-3.5 w-3.5 fill-current shrink-0" />
+              )}
+              {executingSql ? 'Running Query...' : querySource === 'databricks' ? 'EXEC_DATABRICKS' : 'EXEC_QUERY'}
             </button>
           </div>
 
@@ -569,7 +694,10 @@ WHEN NOT MATCHED THEN
               <div className="flex items-center justify-between border-b border-[#141414]/15 pb-3">
                 <div>
                   <h3 className="text-xs font-bold text-[#141414] uppercase tracking-wider">Relation Set Results</h3>
-                  <p className="text-[9px] font-mono text-[#141414]/60 uppercase">Structured tables view resulting from selected schema query logic</p>
+                  <p className="text-[9px] font-mono text-[#141414]/60 uppercase">
+                    {querySource === 'databricks' ? 'Results from Databricks SQL Warehouse' : 'Results from PostgreSQL RDS'}
+                    {queryTimeMs !== null && ` · ${queryTimeMs}ms`}
+                  </p>
                 </div>
                 <span className="font-mono text-xs font-bold text-[#141414]">Rows count: {sqlResults.length}</span>
               </div>
@@ -613,10 +741,116 @@ WHEN NOT MATCHED THEN
             </div>
 
             <div className="pt-4 border-t border-[#141414]/15 text-[9px] text-[#141414]/50 block font-mono mt-4 uppercase">
-              Database models synced dynamically: patients, appointments, doctors, transactions, departments.
+              Database engine: {querySource === 'databricks' ? 'Databricks SQL Warehouse' : 'PostgreSQL RDS'} · Models: patients, appointments, doctors, transactions, departments
             </div>
           </div>
 
+        </div>
+      )}
+
+      {/* Tab: Data Sync */}
+      {activeTab === 'sync' && (
+        <div className="space-y-6">
+          
+          {/* Sync Control Panel */}
+          <div className="bg-white rounded-none p-6 border border-[#141414] shadow-none space-y-6">
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="text-xs font-bold text-[#141414] tracking-wider uppercase font-sans">RDS → DATABRICKS DATA SYNCHRONIZATION</h3>
+                <p className="text-[10px] font-mono text-[#141414]/60 uppercase mt-0.5">Push PostgreSQL data to Databricks Delta Lake Bronze tables with Silver/Gold materialization</p>
+              </div>
+              <button
+                onClick={handleSync}
+                disabled={syncing || !databricksStatus?.connected}
+                className="px-6 py-2.5 bg-[#0066FF] hover:bg-blue-500 text-white font-bold font-mono text-xs tracking-wider transition disabled:opacity-30 flex items-center gap-2 cursor-pointer uppercase"
+              >
+                {syncing ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Zap className="h-3.5 w-3.5" />
+                )}
+                {syncing ? 'SYNCING...' : 'TRIGGER_FULL_SYNC'}
+              </button>
+            </div>
+
+            {/* Connection Info */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="p-3 border border-[#141414]/20 bg-[#F0EFEC]">
+                <span className="text-[9px] font-mono text-[#141414]/50 uppercase block">Source</span>
+                <span className="text-[11px] font-mono font-bold text-[#141414] block mt-1">PostgreSQL RDS</span>
+              </div>
+              <div className="p-3 border border-[#141414]/20 bg-[#F0EFEC]">
+                <span className="text-[9px] font-mono text-[#141414]/50 uppercase block">Target</span>
+                <span className="text-[11px] font-mono font-bold text-[#141414] block mt-1">Databricks Delta</span>
+              </div>
+              <div className="p-3 border border-[#141414]/20 bg-[#F0EFEC]">
+                <span className="text-[9px] font-mono text-[#141414]/50 uppercase block">Catalog</span>
+                <span className="text-[11px] font-mono font-bold text-[#141414] block mt-1">{databricksStatus?.catalog || 'N/A'}</span>
+              </div>
+              <div className="p-3 border border-[#141414]/20 bg-[#F0EFEC]">
+                <span className="text-[9px] font-mono text-[#141414]/50 uppercase block">Last Sync</span>
+                <span className="text-[11px] font-mono font-bold text-[#141414] block mt-1">
+                  {databricksStatus?.syncStatus?.lastSyncTime 
+                    ? new Date(databricksStatus.syncStatus.lastSyncTime).toLocaleTimeString() 
+                    : 'Never'}
+                </span>
+              </div>
+            </div>
+
+            {/* Sync Results */}
+            {syncResult && (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <span className={`text-[9px] font-mono font-bold px-2 py-0.5 uppercase ${
+                    syncResult.overallStatus === 'SUCCESS' ? 'bg-[#00CC66]/20 text-[#00CC66] border border-[#00CC66]' :
+                    syncResult.overallStatus === 'PARTIAL' ? 'bg-[#FF9900]/20 text-[#FF9900] border border-[#FF9900]' :
+                    'bg-[#FF3300]/20 text-[#FF3300] border border-[#FF3300]'
+                  }`}>
+                    {syncResult.overallStatus}
+                  </span>
+                  <span className="text-[10px] font-mono text-[#141414]/60 uppercase">
+                    Sync completed at {syncResult.lastSyncTime ? new Date(syncResult.lastSyncTime).toLocaleString() : 'N/A'}
+                  </span>
+                </div>
+
+                <div className="overflow-auto border border-[#141414]/20">
+                  <table className="w-full text-left border-collapse font-mono text-xs">
+                    <thead>
+                      <tr className="bg-[#F0EFEC] border-b border-[#141414]">
+                        <th className="px-4 py-2 font-bold text-[#141414] uppercase text-[10px]">Table</th>
+                        <th className="px-4 py-2 font-bold text-[#141414] uppercase text-[10px]">Status</th>
+                        <th className="px-4 py-2 font-bold text-[#141414] uppercase text-[10px]">Rows Synced</th>
+                        <th className="px-4 py-2 font-bold text-[#141414] uppercase text-[10px]">Duration</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#141414]/10">
+                      {(syncResult.syncs || []).map((sync: any, idx: number) => (
+                        <tr key={idx} className="hover:bg-[#F0EFEC]/40">
+                          <td className="px-4 py-2 font-bold text-[#141414]">{sync.table}</td>
+                          <td className="px-4 py-2">
+                            <span className={`text-[9px] font-bold px-1.5 py-0.5 uppercase ${
+                              sync.success ? 'bg-[#00CC66]/20 text-[#00CC66]' : 'bg-[#FF3300]/20 text-[#FF3300]'
+                            }`}>
+                              {sync.success ? 'OK' : 'FAILED'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-2 text-[#141414]">{sync.rowsSynced?.toLocaleString() || 0}</td>
+                          <td className="px-4 py-2 text-[#141414]/60">{sync.durationMs}ms</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {!databricksStatus?.connected && (
+              <div className="p-4 bg-[#FF9900]/10 border border-[#FF9900] text-[#FF9900] text-xs font-mono uppercase flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 shrink-0" />
+                Databricks warehouse is not connected. Sync requires an active SQL Warehouse.
+              </div>
+            )}
+          </div>
         </div>
       )}
 

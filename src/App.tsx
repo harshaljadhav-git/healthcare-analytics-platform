@@ -17,6 +17,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [summary, setSummary] = useState<any>(null);
   const [simStatus, setSimStatus] = useState<any>(null);
+  const [databricksHealth, setDatabricksHealth] = useState<{ connected: boolean; warehouseState?: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
@@ -104,6 +105,20 @@ export default function App() {
     }
   };
 
+  // Fetch Databricks connection health
+  const fetchDatabricksHealth = async () => {
+    if (!token) return;
+    try {
+      const res = await fetch('/api/databricks/status', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      setDatabricksHealth({ connected: data.connected, warehouseState: data.warehouseState });
+    } catch {
+      setDatabricksHealth({ connected: false });
+    }
+  };
+
   // Alter speed configurations
   const handleSpeedChange = async (speed: string) => {
     if (!token) return;
@@ -152,6 +167,7 @@ export default function App() {
       fetchCurrentUser();
       fetchSummaryStats();
       fetchSimStatus();
+      fetchDatabricksHealth();
     }
   }, [token]);
 
@@ -162,6 +178,15 @@ export default function App() {
       fetchSummaryStats();
       fetchSimStatus();
     }, 4500); // Poll every 4.5 seconds
+    return () => clearInterval(interval);
+  }, [token]);
+
+  // Slower poll for Databricks health (every 30s)
+  useEffect(() => {
+    if (!token) return;
+    const interval = setInterval(() => {
+      fetchDatabricksHealth();
+    }, 30000);
     return () => clearInterval(interval);
   }, [token]);
 
@@ -251,7 +276,7 @@ export default function App() {
           
           <div className="pt-3 border-t border-[#141414]/10 text-[10px] font-mono opacity-50 uppercase space-y-0.5">
             <div>Worker: node-01-ok</div>
-            <div>DB instance: postgres-01</div>
+            <div>DB instance: postgresql-rds</div>
           </div>
         </div>
 
@@ -311,8 +336,13 @@ export default function App() {
               <div className="w-px h-8 bg-[#141414] opacity-20"></div>
               <div className="flex flex-col items-end">
                 <span className="text-[9px] uppercase font-bold opacity-40">DATABRICKS</span>
-                <div className="flex items-center gap-1.5 text-[#0066FF] font-bold text-[10px]">
-                  CONNECTED
+                <div className={`flex items-center gap-1.5 font-bold text-[10px] ${
+                  databricksHealth?.connected ? 'text-[#00CC66]' : 'text-[#FF3300]'
+                }`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${
+                    databricksHealth?.connected ? 'bg-[#00CC66] animate-pulse' : 'bg-[#FF3300]'
+                  }`}></span>
+                  {databricksHealth?.connected ? (databricksHealth.warehouseState || 'CONNECTED') : 'OFFLINE'}
                 </div>
               </div>
             </div>
