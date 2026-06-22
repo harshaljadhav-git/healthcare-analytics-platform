@@ -1,10 +1,9 @@
 import React, { useState } from 'react';
-import { UserRole } from '../types';
 import { Shield, Key, HeartPulse, Sparkles } from 'lucide-react';
 import { motion } from 'motion/react';
 
 interface LoginProps {
-  onLogin: (username: string, role: UserRole) => void;
+  onLogin: (username: string, password: string) => void;
   errorMsg: string | null;
   loading: boolean;
 }

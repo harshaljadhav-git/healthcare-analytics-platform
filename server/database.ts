@@ -14,6 +14,9 @@ class HealthcareDatabase {
   transactions: BillingTransaction[] = [];
   departments: Department[] = [];
   
+  // O(1) patient lookup index
+  patientIndex: Map<string, Patient> = new Map();
+  
   // Custom simulation configs
   simulationSpeed: 'Pause' | 'RealTime' | 'Fast' | 'Hyper' = 'Fast';
   lastGeneratedTime: string = new Date().toISOString();
@@ -47,6 +50,9 @@ class HealthcareDatabase {
         this.recordGrowthHistory = parsed.recordGrowthHistory || [];
         
         console.log(`Loaded fully functional dataset: ${this.patients.length} patients, ${this.appointments.length} appointments, ${this.transactions.length} transactions.`);
+        
+        // Build patient index for O(1) lookups
+        this.rebuildPatientIndex();
         
         // If data is somehow empty, seed it
         if (this.patients.length === 0) {
@@ -83,6 +89,14 @@ class HealthcareDatabase {
       fs.renameSync(tempFile, DB_FILE);
     } catch (err) {
       console.error('Error saving databases to disk:', err);
+    }
+  }
+
+  // Rebuild the patient index Map for O(1) lookups
+  private rebuildPatientIndex() {
+    this.patientIndex.clear();
+    for (const p of this.patients) {
+      this.patientIndex.set(p.id, p);
     }
   }
 
@@ -349,6 +363,9 @@ class HealthcareDatabase {
     });
 
     this.save();
+    
+    // Build patient index after seeding
+    this.rebuildPatientIndex();
   }
 
   // Generate 1-10 incremental records to simulate system activity
@@ -404,6 +421,7 @@ class HealthcareDatabase {
         category: categories[Math.floor(Math.random() * categories.length)]
       };
       this.patients.push(newPatient);
+      this.patientIndex.set(pId, newPatient);
 
       // 2. Generate appointment
       const apId = `AP${String(this.appointments.length + 1).padStart(6, '0')}`;
@@ -499,8 +517,7 @@ class HealthcareDatabase {
     // Dynamic Insurance Share
     const insuranceRevenueMap: { [key: string]: { count: number; total: number } } = {};
     for (const tx of this.transactions) {
-      const ptId = tx.patientId;
-      const pt = this.patients.find(p => p.id === ptId);
+      const pt = this.patientIndex.get(tx.patientId);
       const provider = pt?.insuranceProvider || 'Self-Pay';
       
       if (!insuranceRevenueMap[provider]) {

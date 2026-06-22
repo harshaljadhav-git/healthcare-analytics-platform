@@ -149,8 +149,8 @@ healthcare_simulator_uptime_seconds ${process.uptime()}
     res.json({ user: req.user });
   });
 
-  // Simulation: Speed Controls & Status Indicators
-  app.get('/api/simulation/status', (req, res) => {
+  // Simulation: Speed Controls & Status Indicators (Authenticated)
+  app.get('/api/simulation/status', verifyToken, (req, res) => {
     res.json({
       speed: db.simulationSpeed,
       lastGenerated: db.lastGeneratedTime,
@@ -339,8 +339,8 @@ healthcare_simulator_uptime_seconds ${process.uptime()}
   // Databricks Data Lake Export Capability (Ingestion APIs)
   // ----------------------------------------------------
 
-  // A. CSV Export Middleware
-  app.get('/api/export/csv/:table', (req, res) => {
+  // A. CSV Export Middleware (Authenticated)
+  app.get('/api/export/csv/:table', verifyToken, (req, res) => {
     const table = req.params.table;
     
     let headers: string[] = [];
@@ -391,8 +391,8 @@ healthcare_simulator_uptime_seconds ${process.uptime()}
     res.send(csvContent);
   });
 
-  // B. JSON Raw Lake Export
-  app.get('/api/export/json/:table', (req, res) => {
+  // B. JSON Raw Lake Export (Authenticated)
+  app.get('/api/export/json/:table', verifyToken, (req, res) => {
     const table = req.params.table;
     let data: any[] = [];
 
