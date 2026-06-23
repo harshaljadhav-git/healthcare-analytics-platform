@@ -27,7 +27,7 @@ ENV NODE_ENV=production
 # Copy built artifacts from Stage 1
 COPY --from=builder /usr/src/app/dist ./dist
 COPY --from=builder /usr/src/app/package*.json ./
-
+COPY --from=builder /usr/src/app/server/db-schema.sql ./server/db-schema.sql
 # Install only production dependencies
 RUN npm ci --only=production
 
