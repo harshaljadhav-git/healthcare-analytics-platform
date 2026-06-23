@@ -1,0 +1,180 @@
+# =============================================================
+# Grafana Alerting Provisioning — PulseStream Healthcare
+# =============================================================
+# Defines:
+#   1. Contact Points (email)
+#   2. Notification Policies (route all alerts to email)
+#   3. Alert Rules (PostgreSQL, Databricks, App health)
+
+apiVersion: 1
+
+# ---------------------------------------------------------
+# Contact Points — Where alerts are sent
+# ---------------------------------------------------------
+contactPoints:
+  - orgId: 1
+    name: pulsestream-email-alerts
+    receivers:
+      - uid: email-receiver-1
+        type: email
+        settings:
+          addresses: "${GF_ALERTING_EMAIL_TO}"
+          singleEmail: true
+        disableResolveMessage: false
+
+# ---------------------------------------------------------
+# Notification Policies — Route all alerts to email
+# ---------------------------------------------------------
+policies:
+  - orgId: 1
+    receiver: pulsestream-email-alerts
+    group_by:
+      - grafana_folder
+      - alertname
+    group_wait: 10s
+    group_interval: 1m
+    repeat_interval: 4h
+
+# ---------------------------------------------------------
+# Alert Rules — Health monitoring
+# ---------------------------------------------------------
+groups:
+  - orgId: 1
+    name: PulseStream Infrastructure Health
+    folder: PulseStream Alerts
+    interval: 15s
+    rules:
+      # =====================================================
+      # ALERT: PostgreSQL RDS is DOWN
+      # =====================================================
+      - uid: alert-postgres-down
+        title: "🔴 PostgreSQL RDS is DOWN"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 60
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: healthcare_postgres_up
+              instant: true
+              refId: A
+          - refId: C
+            relativeTimeRange:
+              from: 60
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              refId: C
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [1]
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    type: last
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 0s
+        annotations:
+          summary: "PostgreSQL RDS database is unreachable from PulseStream engine."
+          description: "The healthcare_postgres_up metric dropped to 0, meaning the application cannot connect to the PostgreSQL RDS instance. Immediate investigation required."
+          runbook_url: ""
+        labels:
+          severity: critical
+          service: postgresql-rds
+
+      # =====================================================
+      # ALERT: Databricks SQL Warehouse is DOWN
+      # =====================================================
+      - uid: alert-databricks-down
+        title: "🟠 Databricks SQL Warehouse is DOWN"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 60
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: healthcare_databricks_up
+              instant: true
+              refId: A
+          - refId: C
+            relativeTimeRange:
+              from: 60
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              refId: C
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [1]
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    type: last
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 0s
+        annotations:
+          summary: "Databricks SQL Warehouse is unreachable from PulseStream engine."
+          description: "The healthcare_databricks_up metric dropped to 0. The Databricks SQL warehouse may be stopped, or the API token may be invalid. Check Databricks console."
+          runbook_url: ""
+        labels:
+          severity: warning
+          service: databricks
+
+      # =====================================================
+      # ALERT: PulseStream Application is DOWN
+      # =====================================================
+      - uid: alert-app-down
+        title: "🔴 PulseStream Application is DOWN"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 60
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: up{job="pulsestream-engine"}
+              instant: true
+              refId: A
+          - refId: C
+            relativeTimeRange:
+              from: 60
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              refId: C
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [1]
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    type: last
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 0s
+        annotations:
+          summary: "PulseStream Healthcare application is unreachable."
+          description: "Prometheus cannot scrape the /metrics endpoint of the PulseStream engine. The application container may have crashed or is not responding."
+          runbook_url: ""
+        labels:
+          severity: critical
+          service: pulsestream-app

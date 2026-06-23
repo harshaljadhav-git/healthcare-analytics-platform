@@ -1,4 +1,7 @@
 services:
+  # =============================================================
+  # PulseStream Healthcare Engine
+  # =============================================================
   pulsescream-engine:
     build:
       context: .
@@ -29,3 +32,84 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    networks:
+      - pulsestream-net
+
+  # =============================================================
+  # Prometheus — Metrics Collection & Storage
+  # =============================================================
+  prometheus:
+    image: prom/prometheus:v3.4.1
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    depends_on:
+      pulsescream-engine:
+        condition: service_healthy
+    networks:
+      - pulsestream-net
+
+  # =============================================================
+  # Grafana — Dashboards, Visualization & Email Alerting
+  # =============================================================
+  grafana:
+    image: grafana/grafana:11.6.0
+    container_name: grafana
+    ports:
+      - "3001:3000"
+    environment:
+      # Admin credentials
+      - GF_SECURITY_ADMIN_USER=${GF_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_ADMIN_PASSWORD:-pulsestream2026}
+      # SMTP / Email Configuration
+      - GF_SMTP_ENABLED=true
+      - GF_SMTP_HOST=${GF_SMTP_HOST:-smtp.gmail.com:587}
+      - GF_SMTP_USER=${GF_SMTP_USER}
+      - GF_SMTP_PASSWORD=${GF_SMTP_PASSWORD}
+      - GF_SMTP_FROM_ADDRESS=${GF_SMTP_FROM:-pulsestream-alerts@healthcare.local}
+      - GF_SMTP_FROM_NAME=PulseStream Alerts
+      - GF_SMTP_STARTTLS_POLICY=MandatoryStartTLS
+      # Alerting email target (used in provisioned contact point)
+      - GF_ALERTING_EMAIL_TO=${GF_ALERTING_EMAIL_TO}
+      # Unified Alerting (Grafana 9+)
+      - GF_UNIFIED_ALERTING_ENABLED=true
+      - GF_ALERTING_ENABLED=false
+    volumes:
+      # Provisioning configs (auto-loaded on startup)
+      - ./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/provisioning/alerting:/etc/grafana/provisioning/alerting:ro
+      # Pre-built dashboards
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      # Persistent storage
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    networks:
+      - pulsestream-net
+
+# =============================================================
+# Persistent Volumes
+# =============================================================
+volumes:
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+
+# =============================================================
+# Shared Network
+# =============================================================
+networks:
+  pulsestream-net:
+    driver: bridge

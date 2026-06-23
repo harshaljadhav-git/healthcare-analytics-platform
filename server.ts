@@ -94,22 +94,72 @@ async function startServer() {
   // REST API Endpoints
   // ----------------------------------------------------
 
-  // Server Health Probe Check
+  // Server Health Probe Check (with real dependency checks)
   app.get('/health', async (req, res) => {
-    res.json({
-      status: 'healthy',
+    // Check PostgreSQL connectivity
+    let pgHealthy = false;
+    try {
+      const { healthCheck } = await import('./server/postgres');
+      pgHealthy = await healthCheck();
+    } catch { pgHealthy = false; }
+
+    // Check Databricks connectivity
+    let dbxHealthy = false;
+    try {
+      if (databricksClient.isConfigured()) {
+        const connTest = await databricksClient.testConnection();
+        dbxHealthy = connTest.connected;
+      }
+    } catch { dbxHealthy = false; }
+
+    const overallStatus = pgHealthy ? 'healthy' : 'degraded';
+
+    res.status(pgHealthy ? 200 : 503).json({
+      status: overallStatus,
       container: 'hospital-stream-engine',
-      database: 'postgresql-rds',
+      dependencies: {
+        postgresql: pgHealthy ? 'up' : 'down',
+        databricks: dbxHealthy ? 'up' : 'down',
+      },
       timestamp: new Date().toISOString(),
       uptime: process.uptime()
     });
   });
 
-  // Prometheus Metrics Export
+  // Prometheus Metrics Export (with health gauges for alerting)
   app.get('/metrics', async (req, res) => {
     const metrics = await db.getPipelineMetrics();
+
+    // Check PostgreSQL health
+    let pgUp = 0;
+    try {
+      const { healthCheck } = await import('./server/postgres');
+      pgUp = (await healthCheck()) ? 1 : 0;
+    } catch { pgUp = 0; }
+
+    // Check Databricks health
+    let dbxUp = 0;
+    try {
+      if (databricksClient.isConfigured()) {
+        const connTest = await databricksClient.testConnection();
+        dbxUp = connTest.connected ? 1 : 0;
+      }
+    } catch { dbxUp = 0; }
+
     res.set('Content-Type', 'text/plain');
-    res.send(`# HELP healthcare_simulator_patients_total Total synthetic patients generated in Bronze Lake
+    res.send(`# HELP healthcare_app_up Whether the PulseStream application is running (1=up, 0=down)
+# TYPE healthcare_app_up gauge
+healthcare_app_up 1
+
+# HELP healthcare_postgres_up Whether PostgreSQL RDS is reachable (1=up, 0=down)
+# TYPE healthcare_postgres_up gauge
+healthcare_postgres_up ${pgUp}
+
+# HELP healthcare_databricks_up Whether Databricks SQL Warehouse is reachable (1=up, 0=down)
+# TYPE healthcare_databricks_up gauge
+healthcare_databricks_up ${dbxUp}
+
+# HELP healthcare_simulator_patients_total Total synthetic patients generated in Bronze Lake
 # TYPE healthcare_simulator_patients_total counter
 healthcare_simulator_patients_total ${metrics.bronzeCount.patients}
 

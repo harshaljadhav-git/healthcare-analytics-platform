@@ -1,0 +1,32 @@
+# =============================================================
+# Prometheus Configuration — PulseStream Healthcare Platform
+# =============================================================
+# Scrapes the application's /metrics endpoint for:
+#   - healthcare_app_up        (is the app alive?)
+#   - healthcare_postgres_up   (is PostgreSQL RDS reachable?)
+#   - healthcare_databricks_up (is Databricks SQL Warehouse reachable?)
+#   - healthcare_simulator_*   (business metrics)
+
+global:
+  scrape_interval: 15s        # How often to scrape targets
+  evaluation_interval: 15s    # How often to evaluate alerting rules
+  scrape_timeout: 10s         # Timeout per scrape
+
+scrape_configs:
+  # -------------------------------------------------------
+  # PulseStream Application Metrics
+  # -------------------------------------------------------
+  - job_name: 'pulsestream-engine'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['pulsescream-engine:3000']
+        labels:
+          service: 'pulsestream-healthcare'
+          environment: 'production'
+
+  # -------------------------------------------------------
+  # Prometheus Self-Monitoring
+  # -------------------------------------------------------
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
