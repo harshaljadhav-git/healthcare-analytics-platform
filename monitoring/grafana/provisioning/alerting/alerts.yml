@@ -42,7 +42,7 @@ groups:
   - orgId: 1
     name: PulseStream Infrastructure Health
     folder: PulseStream Alerts
-    interval: 15s
+    interval: 10s
     rules:
       # =====================================================
       # ALERT: PostgreSQL RDS is DOWN
